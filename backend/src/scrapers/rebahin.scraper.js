@@ -11,44 +11,62 @@ function extractSlug(url) {
     } catch (error) { return ''; }
 }
 
-function detectContentType($el, title, url) {
+function detectContentType(title, url) {
     const text = (url + title).toLowerCase();
-    const isSeries = ['drakor', 'drama', 'series', 'episode', 'season'].some(x => text.includes(x));
+    const isSeries = ['drakor', 'drama', 'series', 'episode', 'season', 'tv'].some(x => text.includes(x));
     if (!isSeries) return { type: 'movie', status: null };
     const status = text.includes('completed') || text.includes('tamat') ? 'complete' : 'ongoing';
     return { type: 'series', status };
 }
 
+function extractImage($el) {
+    let img = $el.find('img').attr('src') || $el.find('img').attr('data-src');
+    if (!img || img.includes('placeholder')) {
+        const style = $el.attr('style') || $el.find('.thumb').attr('style');
+        if (style) {
+            const match = style.match(/url\(['"]?([^'"]+)['"]?\)/);
+            if (match) img = match[1];
+        }
+    }
+    if (img && !img.startsWith('http')) {
+        img = img.startsWith('//') ? 'https:' + img : config.rebahinBaseUrl + img;
+    }
+    return img;
+}
+
 export async function scrapeByUrl(url) {
     try {
         const html = await fetchHTML(url);
+        if (!html) return [];
         const $ = cheerio.load(html);
         const movies = [];
 
-        $('article, .item, .post, .movie-item').each((i, element) => {
+        // Selector .ml-item untuk Rebahin juga
+        const items = $('.ml-item, .movie-item, article.item, .post');
+        console.log(`[Scraper Rebahin] Found ${items.length} items`);
+
+        items.each((i, element) => {
             try {
                 const $el = $(element);
-                const $link = $el.find('a[href*="nonton"], a[href*="movie"]').first() || $el.find('a').first();
+                const $link = $el.find('a').first();
                 const movieUrl = $link.attr('href');
-                if (!movieUrl) return;
+                let title = $link.attr('title') || $el.find('h2').text().trim();
+                
+                if (!movieUrl || !title) return;
 
-                let title = $el.find('h2, h3, .title').text().trim() || $link.attr('title');
-                let image = $el.find('img').attr('src') || $el.find('img').attr('data-src');
-                if (image && !image.startsWith('http')) {
-                    image = image.startsWith('//') ? 'https:' + image : config.rebahinBaseUrl + image;
-                }
-
+                const image = extractImage($el);
                 const fullUrl = movieUrl.startsWith('http') ? movieUrl : config.rebahinBaseUrl + movieUrl;
                 const slug = extractSlug(fullUrl);
-                const { type, status } = detectContentType($el, title, fullUrl);
-                const rating = $el.find('.rating, .score').text().trim() || '-';
-                const quality = $el.find('.quality').text().trim() || 'HD';
-                let year = $el.find('.year').text().trim();
+                const rating = $el.find('.mli-rating, .rating').text().trim().replace('-', '').trim() || 'N/A';
+                const quality = $el.find('.mli-quality, .quality').text().trim() || 'HD';
+                const year = title.match(/\((\d{4})\)/) ? title.match(/\((\d{4})\)/)[1] : '';
 
-                if (title && slug) {
-                    const baseData = { title, slug, poster: image, quality, rating, year };
-                    if (type === 'movie') movies.push({ ...baseData, movie_url: fullUrl });
-                    else movies.push({ ...baseData, series_url: fullUrl, status });
+                const { type, status } = detectContentType(title, fullUrl);
+
+                if (slug) {
+                    const data = { title, slug, poster: image, quality, rating, year };
+                    if (type === 'movie') movies.push({ ...data, movie_url: fullUrl });
+                    else movies.push({ ...data, series_url: fullUrl, status });
                 }
             } catch (e) {}
         });
@@ -65,16 +83,19 @@ export async function scrapeMovieDetail(contentUrl) {
         const $ = cheerio.load(html);
 
         const title = $('h1').text().trim();
-        const description = $('.description, .synopsis, .entry-content p').text().trim();
-        let poster = $('.poster img, .thumbnail img').attr('src');
-
-        // PENTING: Logika Ekstraksi Server (Base64) - Sama dengan Kitanonton
-        const embedUrls = [];
         
+        let description = $('.desc-des-pendek').text().trim();
+        if (!description) description = $('[itemprop="description"]').text().trim();
+        description = description.replace(/Jangan lupa untuk selalu cek.*/si, '').trim();
+        description = description.replace(/Nonton Film.*–/si, '').trim();
+
+        const poster = extractImage($('.mvic-thumb'));
+
+        const embedUrls = [];
         $('.server').each((i, el) => {
-            const b64 = $(el).attr('data-iframe');
-            const labelRaw = $(el).find('.server-title').text().trim();
-            const label = labelRaw || `Server ${i+1}`;
+            const $s = $(el);
+            const b64 = $s.attr('data-iframe');
+            const label = $s.find('.server-title').text().trim() || `Server ${i+1}`;
 
             if (b64) {
                 try {
@@ -86,19 +107,9 @@ export async function scrapeMovieDetail(contentUrl) {
             }
         });
 
-        // Fallback Iframe
-        if (embedUrls.length === 0) {
-            $('iframe').each((i, el) => {
-                const src = $(el).attr('src') || $(el).attr('data-src');
-                if (src && src.startsWith('http')) {
-                    embedUrls.push({ type: 'iframe', url: src, label: `Server ${i+1}` });
-                }
-            });
-        }
-
         return {
             title,
-            description,
+            description: description || 'Sinopsis belum tersedia.',
             poster,
             embedUrls,
             slug: extractSlug(contentUrl),
