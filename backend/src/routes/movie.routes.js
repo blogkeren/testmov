@@ -6,233 +6,111 @@ import { getCachedData, saveCachedData } from '../utils/cacheManager.js';
 
 const router = express.Router();
 
-// ==========================================
-//              REBAHIN ROUTES
-// ==========================================
+async function handlePlayRequest(req, res, source, scraper, baseUrl) {
+    try {
+        const { slug } = req.params;
+        const { ep } = req.query;
+        const cacheType = ep ? `${source}-play-ep${ep}` : `${source}-play-movie`;
 
+        // 1. Cache
+        const cached = await getCachedData(slug, cacheType);
+        if (cached) return res.json(cached);
+
+        // 2. Scrape Detail untuk dapat URL Server (Hasil Decode Base64)
+        const detailUrl = `${baseUrl}/nonton-${slug}/`;
+        console.log(`[Play] Getting servers from: ${detailUrl}`);
+        
+        const detail = await scraper.scrapeMovieDetail(detailUrl);
+        let validServers = detail.embedUrls || [];
+
+        // 3. Jika tidak ada server, coba fallback manual (jarang terjadi dgn kode baru)
+        if (validServers.length === 0) {
+            let defaultUrl = `${detailUrl}play/?sv=1`;
+            if (ep) defaultUrl += `&ep=${ep}`;
+            validServers.push({ server: 1, url: defaultUrl, label: 'Default Server' });
+        }
+
+        // 4. Resolve Video URL (Sequential)
+        const { extractEmbedUrlWithPuppeteer } = await import('../utils/puppeteerHelper.js');
+        const resolvedServers = [];
+
+        for (const s of validServers) {
+            // Jika URL dari scraper sudah file video langsung (misal .mp4), pakai langsung!
+            if (s.url.includes('.mp4') || s.url.includes('.m3u8')) {
+                resolvedServers.push({ server: resolvedServers.length + 1, url: s.url, success: true, label: s.label });
+                break;
+            }
+
+            // Jika masih link embed (misal short.icu), ekstrak isinya
+            try {
+                const videoUrl = await extractEmbedUrlWithPuppeteer(s.url);
+                if (videoUrl) {
+                    resolvedServers.push({ server: resolvedServers.length + 1, url: videoUrl, success: true, label: s.label });
+                    console.log(`[Play] Success: ${s.label}`);
+                    break; // Ambil 1 server terbaik agar cepat
+                }
+            } catch (e) { console.log(`[Play] Failed: ${s.label}`); }
+        }
+
+        const responseData = {
+            success: true, source, slug, episode: ep || 1,
+            default_server: resolvedServers[0]?.server,
+            default_url: resolvedServers[0]?.url,
+            servers: resolvedServers,
+            cached: false
+        };
+
+        if (resolvedServers.length > 0) await saveCachedData(slug, cacheType, { ...responseData, cached: true });
+        
+        res.json(responseData);
+
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+}
+
+// ROUTES SETUP
 router.get('/rebahin/home', async (req, res) => {
-    try {
-        const movies = await rebahinScraper.scrapeByUrl(config.rebahinBaseUrl);
-        res.json({ success: true, source: 'rebahin', page: 'home', count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+    const data = await rebahinScraper.scrapeByUrl(config.rebahinBaseUrl);
+    res.json({ success: true, count: data.length, data });
 });
-
 router.get('/rebahin/movie', async (req, res) => {
-    try {
-        const movies = await rebahinScraper.scrapeByUrl(`${config.rebahinBaseUrl}/movies/`);
-        res.json({ success: true, source: 'rebahin', category: 'movie', page: 1, count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+    const data = await rebahinScraper.scrapeByUrl(`${config.rebahinBaseUrl}/movies/`);
+    res.json({ success: true, count: data.length, data });
 });
-
-router.get('/rebahin/movie/page/:pageNum', async (req, res) => {
-    try {
-        const { pageNum } = req.params;
-        const movies = await rebahinScraper.scrapeByUrl(`${config.rebahinBaseUrl}/movies/page/${pageNum}/`);
-        res.json({ success: true, source: 'rebahin', category: 'movie', page: parseInt(pageNum), count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+router.get('/rebahin/movie/page/:p', async (req, res) => {
+    const data = await rebahinScraper.scrapeByUrl(`${config.rebahinBaseUrl}/movies/page/${req.params.p}/`);
+    res.json({ success: true, count: data.length, data });
 });
-
 router.get('/rebahin/detail/:slug', async (req, res) => {
-    try {
-        const { slug } = req.params;
-        
-        // 1. Cek Cache
-        const cached = await getCachedData(slug, 'rebahin-detail');
-        if (cached) {
-            return res.json({ success: true, source: 'rebahin', data: cached, cached: true });
-        }
-
-        // 2. Scrape
-        const movieDetail = await rebahinScraper.scrapeMovieDetail(`${config.rebahinBaseUrl}/nonton-${slug}/`);
-        
-        // 3. Simpan
-        await saveCachedData(slug, 'rebahin-detail', movieDetail);
-
-        res.json({ success: true, source: 'rebahin', data: movieDetail, cached: false });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+    const c = await getCachedData(req.params.slug, 'rebahin-detail');
+    if (c) return res.json({ success: true, data: c, cached: true });
+    const d = await rebahinScraper.scrapeMovieDetail(`${config.rebahinBaseUrl}/nonton-${req.params.slug}/`);
+    await saveCachedData(req.params.slug, 'rebahin-detail', d);
+    res.json({ success: true, data: d, cached: false });
 });
+router.get('/rebahin/play/:slug', (req, res) => handlePlayRequest(req, res, 'rebahin', rebahinScraper, config.rebahinBaseUrl));
 
-router.get('/rebahin/play/:slug', async (req, res) => {
-    try {
-        const { slug } = req.params;
-        const { ep } = req.query;
-        const cacheType = ep ? `rebahin-play-ep${ep}` : 'rebahin-play-movie';
-        
-        // 1. Cek Cache
-        const cached = await getCachedData(slug, cacheType);
-        if (cached) return res.json(cached);
-
-        const { extractEmbedUrlWithPuppeteer } = await import('../utils/puppeteerHelper.js');
-
-        // [OPTIMASI] Cek server satu per satu (Sequential)
-        const servers = [1, 2, 3, 4, 5]; 
-        const availableServers = [];
-
-        console.log(`[Rebahin Play] Starting check for ${slug}...`);
-
-        for (const sv of servers) {
-            let playUrl = `${config.rebahinBaseUrl}/nonton-${slug}/play/`;
-            const params = [];
-            if (ep) params.push(`ep=${ep}`);
-            params.push(`sv=${sv}`);
-            playUrl += '?' + params.join('&');
-
-            try {
-                const embedUrl = await extractEmbedUrlWithPuppeteer(playUrl);
-                if (embedUrl) {
-                    availableServers.push({ server: sv, url: embedUrl, success: true });
-                    console.log(`[Rebahin Play] Server ${sv} OK. Stopping.`);
-                    break; // Stop jika sudah ketemu satu
-                }
-            } catch (err) {
-                console.log(`[Rebahin Play] Server ${sv} Failed: ${err.message}`);
-            }
-        }
-
-        const responseData = {
-            success: true,
-            source: 'rebahin',
-            slug,
-            episode: ep || 1,
-            default_server: availableServers.length > 0 ? availableServers[0].server : null,
-            default_url: availableServers.length > 0 ? availableServers[0].url : null,
-            servers: availableServers,
-            cached: false
-        };
-
-        // 3. Simpan
-        if (availableServers.length > 0) {
-            const dataToSave = { ...responseData, cached: true };
-            await saveCachedData(slug, cacheType, dataToSave);
-        }
-
-        res.json(responseData);
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-
-// ==========================================
-//             KITANONTON ROUTES
-// ==========================================
-
+// KITANONTON (Sama persis logicnya)
 router.get('/kitanonton/home', async (req, res) => {
-    try {
-        const movies = await kitanontonScraper.scrapeByUrl(config.kitanontonBaseUrl);
-        res.json({ success: true, source: 'kitanonton', page: 'home', count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+    const data = await kitanontonScraper.scrapeByUrl(config.kitanontonBaseUrl);
+    res.json({ success: true, count: data.length, data });
 });
-
 router.get('/kitanonton/movie', async (req, res) => {
-    try {
-        const movies = await kitanontonScraper.scrapeByUrl(`${config.kitanontonBaseUrl}/movies/`);
-        res.json({ success: true, source: 'kitanonton', category: 'movie', page: 1, count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+    const data = await kitanontonScraper.scrapeByUrl(`${config.kitanontonBaseUrl}/movies/`);
+    res.json({ success: true, count: data.length, data });
 });
-
-router.get('/kitanonton/movie/page/:pageNum', async (req, res) => {
-    try {
-        const { pageNum } = req.params;
-        const movies = await kitanontonScraper.scrapeByUrl(`${config.kitanontonBaseUrl}/movies/page/${pageNum}/`);
-        res.json({ success: true, source: 'kitanonton', category: 'movie', page: parseInt(pageNum), count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+router.get('/kitanonton/movie/page/:p', async (req, res) => {
+    const data = await kitanontonScraper.scrapeByUrl(`${config.kitanontonBaseUrl}/movies/page/${req.params.p}/`);
+    res.json({ success: true, count: data.length, data });
 });
-
 router.get('/kitanonton/detail/:slug', async (req, res) => {
-    try {
-        const { slug } = req.params;
-        
-        // 1. Cek Cache
-        const cached = await getCachedData(slug, 'kitanonton-detail');
-        if (cached) {
-            return res.json({ success: true, source: 'kitanonton', data: cached, cached: true });
-        }
-
-        // 2. Scrape
-        const movieDetail = await kitanontonScraper.scrapeMovieDetail(`${config.kitanontonBaseUrl}/nonton-${slug}/`);
-        
-        // 3. Simpan
-        await saveCachedData(slug, 'kitanonton-detail', movieDetail);
-        
-        res.json({ success: true, source: 'kitanonton', data: movieDetail, cached: false });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+    const c = await getCachedData(req.params.slug, 'kitanonton-detail');
+    if (c) return res.json({ success: true, data: c, cached: true });
+    const d = await kitanontonScraper.scrapeMovieDetail(`${config.kitanontonBaseUrl}/nonton-${req.params.slug}/`);
+    await saveCachedData(req.params.slug, 'kitanonton-detail', d);
+    res.json({ success: true, data: d, cached: false });
 });
-
-router.get('/kitanonton/play/:slug', async (req, res) => {
-    try {
-        const { slug } = req.params;
-        const { ep } = req.query;
-        const cacheType = ep ? `kitanonton-play-ep${ep}` : 'kitanonton-play-movie';
-
-        // 1. Cek Cache
-        const cached = await getCachedData(slug, cacheType);
-        if (cached) return res.json(cached);
-
-        const { extractEmbedUrlWithPuppeteer } = await import('../utils/puppeteerHelper.js');
-
-        // [OPTIMASI] Cek server satu per satu (Sequential)
-        const servers = [1, 2, 3, 4, 5];
-        const availableServers = [];
-
-        console.log(`[Kitanonton Play] Starting check for ${slug}...`);
-
-        for (const sv of servers) {
-            let playUrl = `${config.kitanontonBaseUrl}/nonton-${slug}/play/`;
-            const params = [];
-            if (ep) params.push(`ep=${ep}`);
-            params.push(`sv=${sv}`);
-            playUrl += '?' + params.join('&');
-
-            try {
-                const embedUrl = await extractEmbedUrlWithPuppeteer(playUrl);
-                if (embedUrl) {
-                    availableServers.push({ server: sv, url: embedUrl, success: true });
-                    console.log(`[Kitanonton Play] Server ${sv} OK. Stopping.`);
-                    break;
-                }
-            } catch (err) {
-                console.log(`[Kitanonton Play] Server ${sv} Failed: ${err.message}`);
-            }
-        }
-
-        const responseData = {
-            success: true,
-            source: 'kitanonton',
-            slug,
-            episode: ep || 1,
-            default_server: availableServers.length > 0 ? availableServers[0].server : null,
-            default_url: availableServers.length > 0 ? availableServers[0].url : null,
-            servers: availableServers,
-            cached: false
-        };
-
-        // 3. Simpan
-        if (availableServers.length > 0) {
-            const dataToSave = { ...responseData, cached: true };
-            await saveCachedData(slug, cacheType, dataToSave);
-        }
-
-        res.json(responseData);
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
+router.get('/kitanonton/play/:slug', (req, res) => handlePlayRequest(req, res, 'kitanonton', kitanontonScraper, config.kitanontonBaseUrl));
 
 export default router;
