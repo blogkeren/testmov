@@ -1,121 +1,102 @@
 import * as cheerio from 'cheerio';
 import { fetchHTML } from '../utils/httpClient.js';
+import { fetchProtectedHTML } from '../utils/puppeteerHelper.js'; // Wajib
 import { config } from '../config/config.js';
 
 function extractSlug(url) {
     try {
-        const cleanUrl = url.replace(/\/$/, '');
-        const segments = cleanUrl.split('/');
-        const lastSegment = segments[segments.length - 1];
-        return lastSegment.replace(/^(nonton-|watch-|film-|movie-)/, '');
-    } catch (error) { return ''; }
+        return url.replace(/\/$/, '').split('/').pop().replace(/^(nonton-|watch-|film-|movie-)/, '');
+    } catch (e) { return ''; }
 }
 
 function detectContentType(title, url) {
-    const text = (url + title).toLowerCase();
-    const isSeries = ['drakor', 'drama', 'series', 'episode', 'season', 'tv'].some(x => text.includes(x));
+    const t = (title + url).toLowerCase();
+    const isSeries = ['drakor', 'drama', 'series', 'episode', 'season'].some(x => t.includes(x));
     if (!isSeries) return { type: 'movie', status: null };
-    const status = text.includes('completed') || text.includes('tamat') ? 'complete' : 'ongoing';
-    return { type: 'series', status };
+    return { type: 'series', status: t.includes('completed') ? 'complete' : 'ongoing' };
 }
 
-function extractImage($el) {
-    let img = $el.find('img').attr('src') || $el.find('img').attr('data-src');
-    if (!img || img.includes('placeholder')) {
-        const style = $el.attr('style') || $el.find('.thumb').attr('style');
-        if (style) {
-            const match = style.match(/url\(['"]?([^'"]+)['"]?\)/);
-            if (match) img = match[1];
-        }
-    }
-    if (img && !img.startsWith('http')) {
-        img = img.startsWith('//') ? 'https:' + img : config.rebahinBaseUrl + img;
-    }
-    return img;
-}
-
+// Scrape List
 export async function scrapeByUrl(url) {
     try {
         const html = await fetchHTML(url);
-        if (!html) return [];
         const $ = cheerio.load(html);
         const movies = [];
 
-        // Selector .ml-item untuk Rebahin juga
-        const items = $('.ml-item, .movie-item, article.item, .post');
-        console.log(`[Scraper Rebahin] Found ${items.length} items`);
-
-        items.each((i, element) => {
+        $('.ml-item, article.item, .movie-item').each((i, el) => {
             try {
-                const $el = $(element);
-                const $link = $el.find('a').first();
-                const movieUrl = $link.attr('href');
-                let title = $link.attr('title') || $el.find('h2').text().trim();
+                const $el = $(el);
+                const link = $el.find('a').first().attr('href');
+                if (!link) return;
+
+                const title = $el.find('h2').text().trim() || $el.find('a').attr('title');
+                let img = $el.find('img').attr('src');
+                // Fix lazy load
+                if (!img || img.includes('data:image')) img = $el.find('img').attr('data-src') || $el.find('img').attr('data-original');
                 
-                if (!movieUrl || !title) return;
-
-                const image = extractImage($el);
-                const fullUrl = movieUrl.startsWith('http') ? movieUrl : config.rebahinBaseUrl + movieUrl;
+                if (img && !img.startsWith('http')) img = img.startsWith('//') ? 'https:' + img : config.rebahinBaseUrl + img;
+                const fullUrl = link.startsWith('http') ? link : config.rebahinBaseUrl + link;
                 const slug = extractSlug(fullUrl);
-                const rating = $el.find('.mli-rating, .rating').text().trim().replace('-', '').trim() || 'N/A';
-                const quality = $el.find('.mli-quality, .quality').text().trim() || 'HD';
-                const year = title.match(/\((\d{4})\)/) ? title.match(/\((\d{4})\)/)[1] : '';
-
                 const { type, status } = detectContentType(title, fullUrl);
+                const rating = $el.find('.rating').text().trim() || 'N/A';
 
                 if (slug) {
-                    const data = { title, slug, poster: image, quality, rating, year };
+                    const data = { title, slug, poster: img, quality: 'HD', rating, year: '' };
                     if (type === 'movie') movies.push({ ...data, movie_url: fullUrl });
                     else movies.push({ ...data, series_url: fullUrl, status });
                 }
             } catch (e) {}
         });
         return movies;
-    } catch (error) {
-        console.error('Scrape Rebahin Error:', error.message);
-        return [];
-    }
+    } catch (e) { return []; }
 }
 
+// Scrape Detail (Full Browser)
 export async function scrapeMovieDetail(contentUrl) {
     try {
-        const html = await fetchHTML(contentUrl);
+        // [PENTING] Gunakan Puppeteer untuk mengambil HTML lengkap (bypass proteksi/JS rendering)
+        const html = await fetchProtectedHTML(contentUrl);
         const $ = cheerio.load(html);
 
         const title = $('h1').text().trim();
-        
-        let description = $('.desc-des-pendek').text().trim();
-        if (!description) description = $('[itemprop="description"]').text().trim();
-        description = description.replace(/Jangan lupa untuk selalu cek.*/si, '').trim();
-        description = description.replace(/Nonton Film.*–/si, '').trim();
+        let description = $('.desc-des-pendek').text().trim() || $('[itemprop="description"]').text().trim();
+        description = description.replace(/Jangan lupa.*/si, '').trim();
 
-        const poster = extractImage($('.mvic-thumb'));
+        let poster = $('.mvic-thumb').css('background-image');
+        if (poster) poster = poster.replace(/^url\(['"]?/, '').replace(/['"]?\)$/, '');
+        else poster = $('.mvic-thumb img').attr('src');
 
         const embedUrls = [];
+        
+        // Cari Server Base64
         $('.server').each((i, el) => {
-            const $s = $(el);
-            const b64 = $s.attr('data-iframe');
-            const label = $s.find('.server-title').text().trim() || `Server ${i+1}`;
-
+            const b64 = $(el).attr('data-iframe');
+            const label = $(el).find('.server-title').text().trim() || `Server ${i+1}`;
+            
             if (b64) {
+                // Decode Manual
                 try {
                     const decoded = Buffer.from(b64, 'base64').toString('utf-8');
                     if (decoded.startsWith('http')) {
-                        embedUrls.push({ type: 'embed', url: decoded, label: label });
+                        embedUrls.push({ type: 'embed', url: decoded, label });
                     }
                 } catch (e) {}
             }
         });
 
+        // Fallback Iframe
+        if (embedUrls.length === 0) {
+            $('iframe').each((i, el) => {
+                const src = $(el).attr('src');
+                if (src && src.startsWith('http') && !src.includes('facebook')) {
+                    embedUrls.push({ type: 'iframe', url: src, label: `Server ${i+1}` });
+                }
+            });
+        }
+
         return {
-            title,
-            description: description || 'Sinopsis belum tersedia.',
-            poster,
-            embedUrls,
-            slug: extractSlug(contentUrl),
-            source: 'rebahin'
+            title, description: description || '-', poster, embedUrls,
+            slug: extractSlug(contentUrl), source: 'rebahin'
         };
-    } catch (error) {
-        throw error;
-    }
+    } catch (error) { throw error; }
 }
