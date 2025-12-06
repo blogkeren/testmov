@@ -38,32 +38,49 @@ async function handlePlayRequest(req, res, source, scraper, baseUrl) {
         for (const s of validServers) {
             console.log(`[Play] Checking ${s.label}: ${s.url}`);
             
+            let finalVideoUrl = null;
+
             // 1. Jika URL sudah langsung video (.mp4/.m3u8), pakai langsung!
             if (s.url.includes('.mp4') || s.url.includes('.m3u8')) {
+                finalVideoUrl = s.url;
+            }
+            // 2. Jika bukan video langsung (misal short.icu), ekstrak dengan Puppeteer
+            else {
+                try {
+                    const extracted = await extractEmbedUrlWithPuppeteer(s.url);
+                    if (extracted) {
+                        finalVideoUrl = extracted;
+                        console.log(`[Play] Success resolving: ${s.url}`);
+                    }
+                } catch (e) {
+                    console.log(`[Play] Failed resolving: ${s.url}`);
+                }
+            }
+
+            // JIKA URL DITEMUKAN, TERAPKAN SOLUSI CLOUDFLARE WORKER DISINI
+            if (finalVideoUrl) {
+                // [FIX 403] Bungkus URL dengan Cloudflare Worker Proxy jika tersedia di config
+                if (config.cloudflareWorkerUrl) {
+                    const target = encodeURIComponent(finalVideoUrl);
+                    const ref = encodeURIComponent(baseUrl); // Referrer asli (rebahin/kitanonton)
+                    const ua = encodeURIComponent(config.userAgent);
+                    
+                    // Format: https://worker-anda.dev/stream?url=...&referer=...
+                    // Menggunakan endpoint /stream (pastikan worker Anda menangani ini)
+                    finalVideoUrl = `${config.cloudflareWorkerUrl}/stream?url=${target}&referer=${ref}&ua=${ua}`;
+                    
+                    console.log(`[Play] Proxied via Cloudflare: ${finalVideoUrl}`);
+                }
+
                 resolvedServers.push({ 
                     server: resolvedServers.length + 1, 
-                    url: s.url, 
+                    url: finalVideoUrl, 
                     success: true,
                     label: s.label
                 });
-                break; // Stop, sudah dapat 1
-            }
 
-            // 2. Jika bukan video langsung (misal short.icu), ekstrak dengan Puppeteer
-            try {
-                const videoUrl = await extractEmbedUrlWithPuppeteer(s.url);
-                if (videoUrl) {
-                    resolvedServers.push({ 
-                        server: resolvedServers.length + 1, 
-                        url: videoUrl, 
-                        success: true,
-                        label: s.label
-                    });
-                    console.log(`[Play] Success resolving: ${s.url}`);
-                    break; // Stop, sudah dapat 1
-                }
-            } catch (e) {
-                console.log(`[Play] Failed resolving: ${s.url}`);
+                // Stop setelah dapat 1 server yang valid agar respon cepat
+                break; 
             }
         }
 
@@ -85,6 +102,7 @@ async function handlePlayRequest(req, res, source, scraper, baseUrl) {
         res.json(responseData);
 
     } catch (error) {
+        console.error(`[Play Error] ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 }
