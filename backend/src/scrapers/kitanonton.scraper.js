@@ -1,0 +1,552 @@
+import * as cheerio from 'cheerio';
+import { fetchHTML } from '../utils/httpClient.js';
+import { config } from '../config/config.js';
+
+/**
+ * Extract slug from URL
+ * @param {string} url - Content URL
+ * @returns {string} Slug extracted from URL
+ */
+function extractSlug(url) {
+    try {
+        const cleanUrl = url.replace(/\/$/, '');
+        const segments = cleanUrl.split('/');
+        const lastSegment = segments[segments.length - 1];
+        return lastSegment.replace(/^(nonton-|watch-|film-|movie-)/, '');
+    } catch (error) {
+        return '';
+    }
+}
+
+/**
+ * Detect content type (movie vs series) and series status
+ * @param {object} $el - Cheerio element
+ * @param {string} title - Content title
+ * @param {string} url - Content URL
+ * @returns {object} - type and status
+ */
+function detectContentType($el, title, url) {
+    const urlLower = url.toLowerCase();
+    const titleLower = title.toLowerCase();
+
+    const seriesIndicators = [
+        'drakor', 'drama-korea', 'kdrama', 'series', 'season', 'episode',
+        'serial', 'ep-', '-ep', 'tv-show', 'drama-china', 'cdrama', 'anime'
+    ];
+
+    const isSeries = seriesIndicators.some(indicator =>
+        urlLower.includes(indicator) || titleLower.includes(indicator)
+    );
+
+    if (!isSeries) {
+        return { type: 'movie', status: null };
+    }
+
+    const completeIndicators = ['complete', 'end', 'tamat', 'finish', 'completed'];
+    const isComplete = completeIndicators.some(indicator =>
+        titleLower.includes(indicator) || $el.find('.status').text().toLowerCase().includes(indicator)
+    );
+
+    return {
+        type: 'series',
+        status: isComplete ? 'complete' : 'ongoing'
+    };
+}
+
+/**
+ * Extract series-specific information
+ * @param {object} $el - Cheerio element  
+ * @param {string} title - Content title
+ * @returns {object} - Series info
+ */
+function extractSeriesInfo($el, title) {
+    let currentEpisode = '';
+    const episodeMatch = title.match(/(?:episode|ep\.?|e)\s*(\d+)/i);
+    if (episodeMatch) {
+        currentEpisode = episodeMatch[1];
+    } else {
+        currentEpisode = $el.find('.episode, .eps').text().trim() || '';
+    }
+
+    const releaseDay = $el.find('.release-day, .day').text().trim() || '';
+    const newestReleaseDate = $el.find('.date, .release-date, .time').text().trim() || '';
+
+    return {
+        current_episode: currentEpisode,
+        release_day: releaseDay,
+        newest_release_date: newestReleaseDate
+    };
+}
+
+/**
+ * Generic scraper for any kitanonton URL
+ * @param {string} url - Full URL to scrape
+ * @returns {Promise<Array>} List of movies/series
+ */
+export async function scrapeByUrl(url) {
+    try {
+        const html = await fetchHTML(url);
+        const $ = cheerio.load(html);
+        const movies = [];
+
+        $('.movie-item, article, .film-item, .ml-item, .item').each((i, element) => {
+            const $el = $(element);
+
+            const $link = $el.is('a') ? $el : $el.find('a').first();
+            const movieUrl = $link.attr('href') || '';
+
+            const title = $el.find('h2, h3, .title, .movie-title').text().trim() ||
+                $link.attr('title') ||
+                $link.attr('oldtitle') || '';
+
+            let image = $el.find('img').attr('src') ||
+                $el.find('img').attr('data-src') ||
+                $el.find('img').attr('data-original') ||
+                $el.find('img').attr('data-lazy-src') || '';
+
+            if (!image) {
+                const bgStyle = $el.find('[style*="background-image"]').attr('style');
+                if (bgStyle) {
+                    const match = bgStyle.match(/url\(['"]?([^'"]+)['"]?\)/);
+                    if (match) image = match[1];
+                }
+            }
+
+            const quality = $el.find('.quality, .qtag, span.quality').text().trim() || '';
+            const rating = $el.find('.rating, .imdb, .score').text().trim() || '';
+
+            let year = $el.find('.year').text().trim() || '';
+            if (!year && title) {
+                const yearMatch = title.match(/\((\d{4})\)/);
+                if (yearMatch) year = yearMatch[1];
+            }
+
+            const duration = $el.find('.duration, .runtime, .time').text().trim() || '';
+
+            if (title && movieUrl) {
+                const fullUrl = movieUrl.startsWith('http') ? movieUrl : config.kitanontonBaseUrl + movieUrl;
+                const slug = extractSlug(fullUrl);
+                const posterUrl = image.startsWith('http') ? image :
+                    image.startsWith('//') ? 'https:' + image :
+                        image ? config.kitanontonBaseUrl + image : '';
+
+                const { type, status } = detectContentType($el, title, fullUrl);
+
+                if (type === 'movie') {
+                    movies.push({
+                        title,
+                        slug,
+                        poster: posterUrl,
+                        quality,
+                        year,
+                        rating,
+                        duration,
+                        movie_url: fullUrl
+                    });
+                } else {
+                    const seriesInfo = extractSeriesInfo($el, title);
+                    movies.push({
+                        title,
+                        slug,
+                        poster: posterUrl,
+                        quality,
+                        current_episode: seriesInfo.current_episode,
+                        release_day: seriesInfo.release_day,
+                        newest_release_date: seriesInfo.newest_release_date,
+                        rating,
+                        series_url: fullUrl,
+                        status
+                    });
+                }
+            }
+        });
+
+        return movies;
+    } catch (error) {
+        console.error('Error scraping kitanonton URL:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Scrape movie list from kitanonton (homepage)
+ * @returns {Promise<Array>} List of movies/series with type-specific information
+ */
+export async function scrapeMovieList() {
+    try {
+        const html = await fetchHTML(config.kitanontonBaseUrl);
+        const $ = cheerio.load(html);
+        const movies = [];
+
+        $('.movie-item, article, .film-item, .ml-item, .item').each((i, element) => {
+            const $el = $(element);
+
+            const $link = $el.is('a') ? $el : $el.find('a').first();
+            const url = $link.attr('href') || '';
+
+            const title = $el.find('h2, h3, .title, .movie-title').text().trim() ||
+                $link.attr('title') ||
+                $link.attr('oldtitle') || '';
+
+            let image = $el.find('img').attr('src') ||
+                $el.find('img').attr('data-src') ||
+                $el.find('img').attr('data-original') ||
+                $el.find('img').attr('data-lazy-src') || '';
+
+            if (!image) {
+                const bgStyle = $el.find('[style*="background-image"]').attr('style');
+                if (bgStyle) {
+                    const match = bgStyle.match(/url\(['"]?([^'"]+)['"]?\)/);
+                    if (match) image = match[1];
+                }
+            }
+
+            const quality = $el.find('.quality, .qtag, span.quality').text().trim() || '';
+            const rating = $el.find('.rating, .imdb, .score').text().trim() || '';
+
+            let year = $el.find('.year').text().trim() || '';
+            if (!year && title) {
+                const yearMatch = title.match(/\((\d{4})\)/);
+                if (yearMatch) year = yearMatch[1];
+            }
+
+            const duration = $el.find('.duration, .runtime, .time').text().trim() || '';
+
+            if (title && url) {
+                const fullUrl = url.startsWith('http') ? url : config.kitanontonBaseUrl + url;
+                const slug = extractSlug(fullUrl);
+                const posterUrl = image.startsWith('http') ? image :
+                    image.startsWith('//') ? 'https:' + image :
+                        image ? config.kitanontonBaseUrl + image : '';
+
+                const { type, status } = detectContentType($el, title, fullUrl);
+
+                if (type === 'movie') {
+                    movies.push({
+                        title,
+                        slug,
+                        poster: posterUrl,
+                        quality,
+                        year,
+                        rating,
+                        duration,
+                        movie_url: fullUrl
+                    });
+                } else {
+                    const seriesInfo = extractSeriesInfo($el, title);
+                    movies.push({
+                        title,
+                        slug,
+                        poster: posterUrl,
+                        quality,
+                        current_episode: seriesInfo.current_episode,
+                        release_day: seriesInfo.release_day,
+                        newest_release_date: seriesInfo.newest_release_date,
+                        rating,
+                        series_url: fullUrl,
+                        status
+                    });
+                }
+            }
+        });
+
+        return movies;
+    } catch (error) {
+        console.error('Error scraping kitanonton movie list:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Extract episodes list from series detail page
+ * @param {object} $ - Cheerio loaded HTML
+ * @returns {Array} - List of episodes
+ */
+function extractEpisodes($) {
+    const episodes = [];
+
+    // Common selectors for episode lists
+    $('.episode-list a, .episodelist a, .eps-list a, .eplister a').each((i, el) => {
+        const $ep = $(el);
+        const episodeTitle = $ep.text().trim();
+        const episodeUrl = $ep.attr('href') || '';
+
+        // Extract episode number
+        const epNumMatch = episodeTitle.match(/(?:episode|ep\.?|e)\s*(\d+)/i);
+        const episodeNumber = epNumMatch ? epNumMatch[1] : (i + 1).toString();
+
+        if (episodeUrl) {
+            episodes.push({
+                episode_number: episodeNumber,
+                episode_title: episodeTitle,
+                episode_url: episodeUrl.startsWith('http') ? episodeUrl : config.kitanontonBaseUrl + episodeUrl
+            });
+        }
+    });
+
+    // If no episodes found with above selectors, try alternative patterns
+    if (episodes.length === 0) {
+        $('a[href*="episode"], a[href*="/ep-"]').each((i, el) => {
+            const $ep = $(el);
+            const episodeUrl = $ep.attr('href') || '';
+            const episodeTitle = $ep.text().trim() || `Episode ${i + 1}`;
+
+            const epNumMatch = episodeUrl.match(/(?:episode|ep)[-_]?(\d+)/i);
+            const episodeNumber = epNumMatch ? epNumMatch[1] : (i + 1).toString();
+
+            if (episodeUrl && !episodes.find(e => e.episode_url === episodeUrl)) {
+                episodes.push({
+                    episode_number: episodeNumber,
+                    episode_title: episodeTitle,
+                    episode_url: episodeUrl.startsWith('http') ? episodeUrl : config.kitanontonBaseUrl + episodeUrl
+                });
+            }
+        });
+    }
+
+    return episodes;
+}
+
+/**
+ * Scrape detailed movie/series information including embed links
+ * @param {string} contentUrl - URL of the content detail page
+ * @returns {Promise<Object>} Content details with embed links
+ */
+export async function scrapeMovieDetail(contentUrl) {
+    try {
+        const html = await fetchHTML(contentUrl);
+        const $ = cheerio.load(html);
+
+        const title = $('h1, .title, .entry-title, .movie-title').first().text().trim();
+        const description = $('.description, .synopsis, .storyline, [itemprop="description"]').first().text().trim();
+        const posterImage = $('.poster img, .movie-poster img, .thumbnail img').attr('src') ||
+            $('meta[property="og:image"]').attr('content') || '';
+
+        const genre = [];
+        $('a[href*="/genre/"], .genre a, a[rel="tag"]').each((i, el) => {
+            const genreText = $(el).text().trim();
+            if (genreText && !genre.includes(genreText)) {
+                genre.push(genreText);
+            }
+        });
+
+        let duration = '';
+        let year = '';
+        let rating = '';
+        let country = '';
+        let director = '';
+        let actors = [];
+
+        $('.info p, .movie-info p, .data').each((i, el) => {
+            const text = $(el).text();
+
+            if (text.includes('Duration') || text.includes('Durasi')) {
+                duration = text.split(':')[1]?.trim() || '';
+            }
+            if (text.includes('Release') || text.includes('Tahun')) {
+                const yearMatch = text.match(/\d{4}/);
+                if (yearMatch) year = yearMatch[0];
+            }
+            if (text.includes('Country') || text.includes('Negara')) {
+                country = text.split(':')[1]?.trim() || '';
+            }
+            if (text.includes('Director') || text.includes('Sutradara')) {
+                director = text.split(':')[1]?.trim() || '';
+            }
+            if (text.includes('Actor') || text.includes('Pemain')) {
+                const actorText = text.split(':')[1]?.trim() || '';
+                actors = actorText.split(',').map(a => a.trim()).filter(a => a);
+            }
+        });
+
+        rating = $('.rating, .imdb, [itemprop="ratingValue"]').first().text().trim();
+
+        if (!year) {
+            const yearMatch = title.match(/\((\d{4})\)/);
+            if (yearMatch) year = yearMatch[1];
+            else year = $('.year').text().trim();
+        }
+
+        const embedUrls = [];
+        const downloadLinks = [];
+
+        $('iframe').each((i, el) => {
+            const src = $(el).attr('src') || $(el).attr('data-src');
+            if (src) {
+                embedUrls.push({
+                    type: 'iframe',
+                    url: src.startsWith('http') ? src : 'https:' + src,
+                    label: `Server ${i + 1}`
+                });
+            }
+        });
+
+        $('.server-item a, .embed-link, .player-option a, .tab-content a, button[data-src]').each((i, el) => {
+            const url = $(el).attr('href') || $(el).attr('data-src');
+            const label = $(el).text().trim() || `Server ${embedUrls.length + 1}`;
+
+            if (url && !embedUrls.find(e => e.url === url)) {
+                embedUrls.push({
+                    type: 'embed',
+                    url: url.startsWith('http') ? url : config.kitanontonBaseUrl + url,
+                    label
+                });
+            }
+        });
+
+        $('.download-link a, .download a, a[download]').each((i, el) => {
+            const url = $(el).attr('href');
+            const quality = $(el).text().trim() || 'Unknown';
+
+            if (url) {
+                downloadLinks.push({
+                    quality,
+                    url: url.startsWith('http') ? url : config.kitanontonBaseUrl + url
+                });
+            }
+        });
+
+        const { type, status } = detectContentType($('body'), title, contentUrl);
+
+        const baseDetail = {
+            title,
+            slug: extractSlug(contentUrl),
+            description,
+            poster: posterImage.startsWith('http') ? posterImage : config.kitanontonBaseUrl + posterImage,
+            genre,
+            rating,
+            country,
+            director,
+            actors,
+            embedUrls,
+            downloadLinks,
+            source: 'kitanonton'
+        };
+
+        if (type === 'movie') {
+            return {
+                ...baseDetail,
+                year,
+                duration,
+                movie_url: contentUrl
+            };
+        } else {
+            const seriesInfo = extractSeriesInfo($('body'), title);
+            const episodes = extractEpisodes($);
+
+            return {
+                ...baseDetail,
+                current_episode: seriesInfo.current_episode,
+                release_day: seriesInfo.release_day,
+                newest_release_date: seriesInfo.newest_release_date,
+                series_url: contentUrl,
+                status,
+                episodes // List of episodes for series
+            };
+        }
+    } catch (error) {
+        console.error('Error scraping kitanonton content detail:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Extract embed URL from a player page
+ * @param {string} playerUrl - URL of the player page
+ * @returns {Promise<string>} Direct embed URL
+ */
+export async function extractEmbedUrl(playerUrl) {
+    try {
+        const html = await fetchHTML(playerUrl);
+        const $ = cheerio.load(html);
+
+        // Method 1: Direct iframe
+        const iframe = $('iframe').first().attr('src') || $('iframe').first().attr('data-src');
+        if (iframe) {
+            const fullUrl = iframe.startsWith('//') ? 'https:' + iframe :
+                iframe.startsWith('http') ? iframe :
+                    config.kitanontonBaseUrl + iframe;
+            return fullUrl;
+        }
+
+        // Method 2: Video source
+        const videoSrc = $('video source, source').first().attr('src');
+        if (videoSrc) {
+            return videoSrc.startsWith('http') ? videoSrc : config.kitanontonBaseUrl + videoSrc;
+        }
+
+        // Method 3: Data attributes on player containers
+        const playerContainer = $('#player, .player, #pembed, .video-container, .embed-responsive');
+        if (playerContainer.length) {
+            const dataSrc = playerContainer.attr('data-src') ||
+                playerContainer.attr('data-lazy') ||
+                playerContainer.attr('data-url') ||
+                playerContainer.find('[data-src]').first().attr('data-src');
+
+            if (dataSrc) {
+                const fullUrl = dataSrc.startsWith('//') ? 'https:' + dataSrc :
+                    dataSrc.startsWith('http') ? dataSrc :
+                        config.kitanontonBaseUrl + dataSrc;
+                return fullUrl;
+            }
+        }
+
+        // Method 4: Extract from all script tags - comprehensive patterns
+        const scripts = $('script').map((i, el) => $(el).html()).get().join('\n');
+
+        // Pattern 1: iframe src in scripts
+        const iframeSrcMatch = scripts.match(/iframe[^>]*src=["']([^"']+)["']/i);
+        if (iframeSrcMatch && iframeSrcMatch[1]) {
+            const url = iframeSrcMatch[1];
+            return url.startsWith('//') ? 'https:' + url : url;
+        }
+
+        // Pattern 2: Direct video files (mp4, m3u8, mpd)
+        const videoFileMatch = scripts.match(/(?:file|source|src|url)["']?\s*[:=]\s*["']([^"']+\.(?:mp4|m3u8|mpd|mkv|avi)[^"']*)["']/i);
+        if (videoFileMatch && videoFileMatch[1]) {
+            return videoFileMatch[1].startsWith('//') ? 'https:' + videoFileMatch[1] : videoFileMatch[1];
+        }
+
+        // Pattern 3: Player setup configurations
+        const playerSetupMatch = scripts.match(/(?:player|jwplayer|videojs|plyr).*?(?:setup|init|config).*?{([^}]+)}/i);
+        if (playerSetupMatch) {
+            const configBlock = playerSetupMatch[1];
+            const urlInConfig = configBlock.match(/(?:file|source|src)["']?\s*[:=]\s*["']([^"']+)["']/i);
+            if (urlInConfig && urlInConfig[1]) {
+                return urlInConfig[1].startsWith('//') ? 'https:' + urlInConfig[1] : urlInConfig[1];
+            }
+        }
+
+        // Pattern 4: Embed URLs in JavaScript variables
+        const embedVarMatch = scripts.match(/(?:embed|player|video)(?:Url|Source|Src)\s*=\s*["']([^"']+)["']/i);
+        if (embedVarMatch && embedVarMatch[1]) {
+            const url = embedVarMatch[1];
+            return url.startsWith('//') ? 'https:' + url : url.startsWith('http') ? url : config.kitanontonBaseUrl + url;
+        }
+
+        // Pattern 5: Look for any URL that looks like a streaming source
+        const streamingPatterns = [
+            /https?:\/\/[^"'\s]+\/(?:embed|player|stream|video|watch)[^"'\s]*/gi,
+            /https?:\/\/(?:fembed|mixdrop|streamtape|doodstream|upstream)[^"'\s]*/gi
+        ];
+
+        for (const pattern of streamingPatterns) {
+            const matches = scripts.match(pattern);
+            if (matches && matches.length > 0) {
+                return matches[0];
+            }
+        }
+
+        // Method 5: Check meta tags
+        const metaEmbed = $('meta[property="og:video"], meta[property="og:video:url"], meta[name="twitter:player"]').attr('content');
+        if (metaEmbed) {
+            return metaEmbed.startsWith('//') ? 'https:' + metaEmbed : metaEmbed;
+        }
+
+        console.error('Could not find embed URL in page. HTML excerpt:', html.substring(0, 500));
+        throw new Error('No embed URL found');
+    } catch (error) {
+        console.error('Error extracting embed URL:', error.message);
+        throw error;
+    }
+}

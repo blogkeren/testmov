@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamFlix - Premium Movie Streaming</title>
+  <meta name="description" content="Watch unlimited movies and TV shows with StreamFlix" />
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Roboto:wght@300;400;500;700&display=swap"
+    rel="stylesheet">
+</head>
+
+<body>
+  <div id="app">
+    <!-- Navigation -->
+    <nav class="navbar" id="navbar">
+      <div class="navbar-container">
+        <div class="navbar-left">
+          <h1 class="logo">STREAMFLIX</h1>
+          <ul class="nav-links">
+            <li><a href="#" class="active">Home</a></li>
+            <li><a href="#">Movies</a></li>
+            <li><a href="#">Series</a></li>
+            <li><a href="#">Popular</a></li>
+          </ul>
+        </div>
+        <div class="navbar-right">
+          <div class="search-container">
+            <input type="text" id="search-input" placeholder="Search movies..." class="search-input" />
+            <svg class="search-icon" width="20" height="20" viewBox="0 0 20 20" fill="none">
+              <path d="M9 17A8 8 0 1 0 9 1a8 8 0 0 0 0 16zM19 19l-4.35-4.35" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" />
+            </svg>
+          </div>
+          <select id="source-select" class="source-select">
+            <option value="rebahin">Rebahin</option>
+            <option value="kitanonton">Kitanonton</option>
+          </select>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Hero Banner -->
+    <section id="hero-section" class="hero hidden">
+      <div class="hero-background">
+        <div class="hero-gradient"></div>
+      </div>
+      <div class="hero-content">
+        <h2 class="hero-title" id="hero-title">Featured Movie</h2>
+        <div class="hero-meta">
+          <span class="hero-rating" id="hero-rating">⭐ 8.5</span>
+          <span class="hero-year" id="hero-year">2024</span>
+          <span class="hero-quality" id="hero-quality">HD</span>
+        </div>
+        <p class="hero-description" id="hero-description">
+          Experience the ultimate streaming adventure with our featured content.
+        </p>
+        <div class="hero-buttons">
+          <button class="btn btn-play" id="hero-play">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            Play Now
+          </button>
+          <button class="btn btn-info" id="hero-info">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+            More Info
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Content -->
+    <main id="main-content">
+      <!-- Loading State -->
+      <div id="loading" class="loading-state hidden">
+        <div class="loading-spinner"></div>
+        <p>Loading amazing content...</p>
+      </div>
+
+      <!-- Error State -->
+      <div id="error" class="error-state hidden"></div>
+
+      <!-- Movies Section -->
+      <section id="movies-section" class="content-section">
+        <!-- Trending Row -->
+        <div class="movie-row" id="trending-row">
+          <h3 class="row-title">Trending Now</h3>
+          <div class="carousel-container">
+            <button class="carousel-btn carousel-btn-left" data-row="trending">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+              </svg>
+            </button>
+            <div class="carousel" id="trending-carousel"></div>
+            <button class="carousel-btn carousel-btn-right" data-row="trending">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Popular Row -->
+        <div class="movie-row" id="popular-row">
+          <h3 class="row-title">Popular Movies</h3>
+          <div class="carousel-container">
+            <button class="carousel-btn carousel-btn-left" data-row="popular">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+              </svg>
+            </button>
+            <div class="carousel" id="popular-carousel"></div>
+            <button class="carousel-btn carousel-btn-right" data-row="popular">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Movies Page Section -->
+    <section id="movies-page" class="movies-page hidden">
+      <div class="movies-page-header">
+        <div class="page-title-section">
+          <button id="movies-back-btn" class="movies-back-btn">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
+            </svg>
+            Home
+          </button>
+          <h1 class="page-title">All Movies</h1>
+        </div>
+
+        <div class="filter-controls">
+          <div class="filter-group">
+            <label for="sort-select">Sort By:</label>
+            <select id="sort-select" class="filter-select">
+              <option value="latest">Latest</option>
+              <option value="title">Title (A-Z)</option>
+              <option value="year">Year</option>
+            </select>
+          </div>
+
+          <div class="filter-group">
+            <label for="year-filter">Year:</label>
+            <select id="year-filter" class="filter-select">
+              <option value="all">All Years</option>
+              <option value="2025">2025</option>
+              <option value="2024">2024</option>
+              <option value="2023">2023</option>
+              <option value="2022">2022</option>
+              <option value="2021">2021</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div id="movies-loading" class="movies-loading hidden">
+        <div class="loading-spinner"></div>
+        <p>Loading movies...</p>
+      </div>
+
+      <!-- Movies Grid -->
+      <div id="movies-grid-page" class="movies-grid-page"></div>
+
+      <!-- Pagination -->
+      <div id="pagination" class="pagination hidden">
+        <button id="prev-page" class="pagination-btn pagination-prev">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+          </svg>
+          Previous
+        </button>
+
+        <div id="page-numbers" class="page-numbers"></div>
+
+        <button id="next-page" class="pagination-btn pagination-next">
+          Next
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+          </svg>
+        </button>
+      </div>
+    </section>
+
+    <!-- Video Player Section -->
+    <section id="player-section" class="player-section hidden">
+      <button id="back-btn" class="player-back-btn">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
+        </svg>
+        Back
+      </button>
+
+      <div class="player-container">
+        <h2 class="player-title" id="movie-title">Loading...</h2>
+
+        <!-- Server Selection -->
+        <div class="server-controls">
+          <label class="server-label">Select Server:</label>
+          <div id="server-buttons" class="server-buttons"></div>
+        </div>
+
+        <!-- Video Player -->
+        <div class="player-wrapper">
+          <iframe id="video-player" allowfullscreen></iframe>
+        </div>
+
+        <!-- Player Info -->
+        <div class="player-info">
+          <div class="info-item">
+            <span class="info-label">Source:</span>
+            <span class="info-value" id="info-source">-</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Episode:</span>
+            <span class="info-value" id="info-episode">-</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Server:</span>
+            <span class="info-value" id="info-server">1</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Movie Detail Modal -->
+    <div id="movie-detail-modal" class="movie-detail-modal hidden">
+      <div class="movie-detail-overlay" id="detail-overlay"></div>
+      <div class="movie-detail-card">
+        <button class="modal-close" id="detail-close">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+            <path
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+
+        <div class="detail-content">
+          <img id="detail-poster" class="detail-poster" src="" alt="" />
+
+          <div class="detail-info">
+            <h2 id="detail-title">Movie Title</h2>
+            <div class="detail-meta">
+              <span id="detail-rating">⭐ 8.0</span>
+              <span id="detail-year">2024</span>
+              <span id="detail-quality">HD</span>
+            </div>
+
+            <p id="detail-description">Movie description goes here...</p>
+
+            <div class="server-selection">
+              <h3>Select Server to Watch</h3>
+              <div id="detail-servers" class="server-grid"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/main.js"></script>
+</body>
+
+</html>
