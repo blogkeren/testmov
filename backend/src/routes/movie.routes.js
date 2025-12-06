@@ -6,62 +6,82 @@ import { getCachedData, saveCachedData } from '../utils/cacheManager.js';
 
 const router = express.Router();
 
+// Helper Play yang dioptimalkan
 async function handlePlayRequest(req, res, source, scraper, baseUrl) {
     try {
         const { slug } = req.params;
         const { ep } = req.query;
         const cacheType = ep ? `${source}-play-ep${ep}` : `${source}-play-movie`;
 
-        // 1. Cache
         const cached = await getCachedData(slug, cacheType);
         if (cached) return res.json(cached);
 
-        // 2. Scrape Detail untuk dapat URL Server (Hasil Decode Base64)
         const detailUrl = `${baseUrl}/nonton-${slug}/`;
-        console.log(`[Play] Getting servers from: ${detailUrl}`);
+        console.log(`[Play] Getting info from: ${detailUrl}`);
         
+        // Ambil data detail (termasuk list server yang sudah didecode base64)
         const detail = await scraper.scrapeMovieDetail(detailUrl);
-        let validServers = detail.embedUrls || [];
+        const validServers = detail.embedUrls || [];
 
-        // 3. Jika tidak ada server, coba fallback manual (jarang terjadi dgn kode baru)
         if (validServers.length === 0) {
-            let defaultUrl = `${detailUrl}play/?sv=1`;
-            if (ep) defaultUrl += `&ep=${ep}`;
-            validServers.push({ server: 1, url: defaultUrl, label: 'Default Server' });
+            // Fallback manual jika base64 kosong (jarang terjadi dgn kode baru)
+            let fallback = `${detailUrl}play/?sv=1`;
+            if (ep) fallback += `&ep=${ep}`;
+            validServers.push({ server: 1, url: fallback, label: 'Server 1' });
         }
 
-        // 4. Resolve Video URL (Sequential)
+        // Import Puppeteer Helper (Versi Ringan)
         const { extractEmbedUrlWithPuppeteer } = await import('../utils/puppeteerHelper.js');
         const resolvedServers = [];
 
+        // Cek Server (Sequential)
         for (const s of validServers) {
-            // Jika URL dari scraper sudah file video langsung (misal .mp4), pakai langsung!
+            console.log(`[Play] Checking ${s.label}: ${s.url}`);
+            
+            // 1. Jika URL sudah langsung video (.mp4/.m3u8), pakai langsung!
             if (s.url.includes('.mp4') || s.url.includes('.m3u8')) {
-                resolvedServers.push({ server: resolvedServers.length + 1, url: s.url, success: true, label: s.label });
-                break;
+                resolvedServers.push({ 
+                    server: resolvedServers.length + 1, 
+                    url: s.url, 
+                    success: true,
+                    label: s.label
+                });
+                break; // Stop, sudah dapat 1
             }
 
-            // Jika masih link embed (misal short.icu), ekstrak isinya
+            // 2. Jika bukan video langsung (misal short.icu), ekstrak dengan Puppeteer
             try {
                 const videoUrl = await extractEmbedUrlWithPuppeteer(s.url);
                 if (videoUrl) {
-                    resolvedServers.push({ server: resolvedServers.length + 1, url: videoUrl, success: true, label: s.label });
-                    console.log(`[Play] Success: ${s.label}`);
-                    break; // Ambil 1 server terbaik agar cepat
+                    resolvedServers.push({ 
+                        server: resolvedServers.length + 1, 
+                        url: videoUrl, 
+                        success: true,
+                        label: s.label
+                    });
+                    console.log(`[Play] Success resolving: ${s.url}`);
+                    break; // Stop, sudah dapat 1
                 }
-            } catch (e) { console.log(`[Play] Failed: ${s.label}`); }
+            } catch (e) {
+                console.log(`[Play] Failed resolving: ${s.url}`);
+            }
         }
 
         const responseData = {
-            success: true, source, slug, episode: ep || 1,
+            success: true,
+            source,
+            slug,
+            episode: ep || 1,
             default_server: resolvedServers[0]?.server,
             default_url: resolvedServers[0]?.url,
             servers: resolvedServers,
             cached: false
         };
 
-        if (resolvedServers.length > 0) await saveCachedData(slug, cacheType, { ...responseData, cached: true });
-        
+        if (resolvedServers.length > 0) {
+            await saveCachedData(slug, cacheType, { ...responseData, cached: true });
+        }
+
         res.json(responseData);
 
     } catch (error) {
@@ -69,7 +89,7 @@ async function handlePlayRequest(req, res, source, scraper, baseUrl) {
     }
 }
 
-// ROUTES SETUP
+// ROUTING
 router.get('/rebahin/home', async (req, res) => {
     const data = await rebahinScraper.scrapeByUrl(config.rebahinBaseUrl);
     res.json({ success: true, count: data.length, data });
@@ -91,7 +111,7 @@ router.get('/rebahin/detail/:slug', async (req, res) => {
 });
 router.get('/rebahin/play/:slug', (req, res) => handlePlayRequest(req, res, 'rebahin', rebahinScraper, config.rebahinBaseUrl));
 
-// KITANONTON (Sama persis logicnya)
+// KITANONTON
 router.get('/kitanonton/home', async (req, res) => {
     const data = await kitanontonScraper.scrapeByUrl(config.kitanontonBaseUrl);
     res.json({ success: true, count: data.length, data });
