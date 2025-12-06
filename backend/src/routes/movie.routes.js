@@ -61,26 +61,28 @@ router.get('/rebahin/detail/:slug', async (req, res) => {
     }
 });
 
-// [UPDATED] Play dengan Cache (Sangat Penting karena Puppeteer berat)
+// [UPDATED] Play dengan Cache & Sequential Check
 router.get('/rebahin/play/:slug', async (req, res) => {
     try {
         const { slug } = req.params;
         const { ep } = req.query;
-        
-        // Buat key unik untuk episode tertentu
         const cacheType = ep ? `rebahin-play-ep${ep}` : 'rebahin-play-movie';
         
         // 1. Cek Cache
         const cached = await getCachedData(slug, cacheType);
-        if (cached) {
-            return res.json(cached); // Cached data sudah mencakup struktur response lengkap
-        }
+        if (cached) return res.json(cached);
 
         const { extractEmbedUrlWithPuppeteer } = await import('../utils/puppeteerHelper.js');
 
-        // Define servers to check (1-5)
-        const servers = [1, 2, 3, 4, 5];
-        const serverPromises = servers.map(async (sv) => {
+        // [OPTIMASI] Cek server satu per satu (Sequential)
+        // Render Free Tier tidak kuat cek 5 server sekaligus
+        const servers = [1, 2, 3, 4, 5]; 
+        const availableServers = [];
+
+        console.log(`[Play] Starting sequential check for ${slug}...`);
+
+        for (const sv of servers) {
+            // Construct URL
             let playUrl = `${config.rebahinBaseUrl}/nonton-${slug}/play/`;
             const params = [];
             if (ep) params.push(`ep=${ep}`);
@@ -88,20 +90,20 @@ router.get('/rebahin/play/:slug', async (req, res) => {
             playUrl += '?' + params.join('&');
 
             try {
+                // Cek Server
                 const embedUrl = await extractEmbedUrlWithPuppeteer(playUrl);
-                return { server: sv, url: embedUrl, success: true };
+                
+                // Jika berhasil, masukkan ke list dan STOP (Break loop)
+                // Kita prioritaskan kecepatan user daripada kelengkapan list server
+                if (embedUrl) {
+                    availableServers.push({ server: sv, url: embedUrl, success: true });
+                    console.log(`[Play] Server ${sv} Working! Stopping search.`);
+                    break; 
+                }
             } catch (err) {
-                return { server: sv, error: err.message, success: false };
+                console.log(`[Play] Server ${sv} Failed: ${err.message}`);
+                // Lanjut ke server berikutnya
             }
-        });
-
-        // Fetch all servers concurrently
-        const results = await Promise.all(serverPromises);
-        const availableServers = results.filter(r => r.success);
-
-        let defaultServer = availableServers.find(s => s.url.includes('short.icu'));
-        if (!defaultServer && availableServers.length > 0) {
-            defaultServer = availableServers[0];
         }
 
         const responseData = {
@@ -109,15 +111,15 @@ router.get('/rebahin/play/:slug', async (req, res) => {
             source: 'rebahin',
             slug,
             episode: ep || 1,
-            default_server: defaultServer ? defaultServer.server : null,
-            default_url: defaultServer ? defaultServer.url : null,
+            // Ambil server pertama yang berhasil
+            default_server: availableServers.length > 0 ? availableServers[0].server : null,
+            default_url: availableServers.length > 0 ? availableServers[0].url : null,
             servers: availableServers,
             cached: false
         };
 
-        // 3. Simpan ke Cache (Hanya jika ada server yang berhasil didapat)
+        // 3. Simpan jika ada hasil
         if (availableServers.length > 0) {
-            // Ubah cached: true sebelum disimpan agar saat di-load nanti statusnya benar
             const dataToSave = { ...responseData, cached: true };
             await saveCachedData(slug, cacheType, dataToSave);
         }
@@ -128,77 +130,24 @@ router.get('/rebahin/play/:slug', async (req, res) => {
     }
 });
 
-// ========== KITANONTON ROUTES ==========
-// Pola yang sama diterapkan untuk Kitanonton
-
-router.get('/kitanonton/home', async (req, res) => {
-    try {
-        const movies = await kitanontonScraper.scrapeByUrl(config.kitanontonBaseUrl);
-        res.json({ success: true, source: 'kitanonton', page: 'home', count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-router.get('/kitanonton/movie', async (req, res) => {
-    try {
-        const movies = await kitanontonScraper.scrapeByUrl(`${config.kitanontonBaseUrl}/movies/`);
-        res.json({ success: true, source: 'kitanonton', category: 'movie', page: 1, count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-router.get('/kitanonton/movie/page/:pageNum', async (req, res) => {
-    try {
-        const { pageNum } = req.params;
-        const movies = await kitanontonScraper.scrapeByUrl(`${config.kitanontonBaseUrl}/movies/page/${pageNum}/`);
-        res.json({ success: true, source: 'kitanonton', category: 'movie', page: parseInt(pageNum), count: movies.length, data: movies });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// [UPDATED] Detail dengan Cache
-router.get('/kitanonton/detail/:slug', async (req, res) => {
-    try {
-        const { slug } = req.params;
-        
-        // 1. Cek Cache
-        const cached = await getCachedData(slug, 'kitanonton-detail');
-        if (cached) {
-            return res.json({ success: true, source: 'kitanonton', data: cached, cached: true });
-        }
-
-        // 2. Scrape
-        const movieDetail = await kitanontonScraper.scrapeMovieDetail(`${config.kitanontonBaseUrl}/nonton-${slug}/`);
-        
-        // 3. Simpan
-        await saveCachedData(slug, 'kitanonton-detail', movieDetail);
-        
-        res.json({ success: true, source: 'kitanonton', data: movieDetail, cached: false });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// [UPDATED] Play dengan Cache
+// [UPDATED] Lakukan hal yang sama persis untuk route /kitanonton/play/:slug
 router.get('/kitanonton/play/:slug', async (req, res) => {
     try {
         const { slug } = req.params;
         const { ep } = req.query;
         const cacheType = ep ? `kitanonton-play-ep${ep}` : 'kitanonton-play-movie';
 
-        // 1. Cek Cache
         const cached = await getCachedData(slug, cacheType);
-        if (cached) {
-            return res.json(cached);
-        }
+        if (cached) return res.json(cached);
 
         const { extractEmbedUrlWithPuppeteer } = await import('../utils/puppeteerHelper.js');
 
         const servers = [1, 2, 3, 4, 5];
-        const serverPromises = servers.map(async (sv) => {
+        const availableServers = [];
+
+        console.log(`[Play KN] Starting sequential check for ${slug}...`);
+
+        for (const sv of servers) {
             let playUrl = `${config.kitanontonBaseUrl}/nonton-${slug}/play/`;
             const params = [];
             if (ep) params.push(`ep=${ep}`);
@@ -207,18 +156,14 @@ router.get('/kitanonton/play/:slug', async (req, res) => {
 
             try {
                 const embedUrl = await extractEmbedUrlWithPuppeteer(playUrl);
-                return { server: sv, url: embedUrl, success: true };
+                if (embedUrl) {
+                    availableServers.push({ server: sv, url: embedUrl, success: true });
+                    console.log(`[Play KN] Server ${sv} Working! Stopping search.`);
+                    break;
+                }
             } catch (err) {
-                return { server: sv, error: err.message, success: false };
+                console.log(`[Play KN] Server ${sv} Failed: ${err.message}`);
             }
-        });
-
-        const results = await Promise.all(serverPromises);
-        const availableServers = results.filter(r => r.success);
-
-        let defaultServer = availableServers.find(s => s.url.includes('short.icu'));
-        if (!defaultServer && availableServers.length > 0) {
-            defaultServer = availableServers[0];
         }
 
         const responseData = {
@@ -226,13 +171,12 @@ router.get('/kitanonton/play/:slug', async (req, res) => {
             source: 'kitanonton',
             slug,
             episode: ep || 1,
-            default_server: defaultServer ? defaultServer.server : null,
-            default_url: defaultServer ? defaultServer.url : null,
+            default_server: availableServers.length > 0 ? availableServers[0].server : null,
+            default_url: availableServers.length > 0 ? availableServers[0].url : null,
             servers: availableServers,
             cached: false
         };
 
-        // 3. Simpan
         if (availableServers.length > 0) {
             const dataToSave = { ...responseData, cached: true };
             await saveCachedData(slug, cacheType, dataToSave);
