@@ -1,7 +1,7 @@
 import './style.css'
 import './movies-page.css'
 
-const API_BASE = 'http://localhost:3000/api';
+const API_BASE = 'https://testmov.onrender.com/api';
 
 // State
 let currentSource = 'rebahin';
@@ -724,3 +724,4 @@ function addPageNumber(page, isActive = false) {
     });
     pageNumbers.appendChild(btn);
 }
+
